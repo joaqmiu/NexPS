@@ -8,7 +8,8 @@
 
 #define MAX_GAMES 6000
 #define DB_BUFFER_SIZE (6 * 1024 * 1024)
-#define CONFIG_PATH "/switch/npsp/settings.dat"
+#define CONFIG_PATH "/switch/NexPS/settings.dat"
+#define DEFAULT_INSTALL_PATH "/tico/roms/psp"
 
 typedef struct {
     char *id;
@@ -18,36 +19,8 @@ typedef struct {
     char *url;
 } GameEntry;
 
-typedef enum {
-    LANG_EN,
-    LANG_PT,
-    LANG_ES,
-    LANG_COUNT
-} Language;
-
-typedef struct {
-    const char *main_menu[5];
-    const char *settings_menu[3];
-    const char *status_downloading;
-    const char *status_converting;
-    const char *status_done;
-    const char *status_error;
-    const char *status_cancel;
-    const char *msg_press_a;
-    const char *msg_no_games;
-    const char *msg_results;
-    const char *title_settings;
-    const char *lang_name;
-    const char *footer_menu;
-    const char *footer_list;
-    const char *footer_dl;
-    const char *footer_settings;
-    const char *speed_select_title;
-    const char *speed_options[3];
-} LangStrings;
-
-extern int current_lang;
-extern const LangStrings languages[LANG_COUNT];
+extern int selected_threads;
+extern char install_path[512];
 
 void load_config();
 void save_config();
