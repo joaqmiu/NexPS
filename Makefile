@@ -6,14 +6,14 @@ endif
 
 TOPDIR ?= $(CURDIR)
 
-APP_TITLE := npsp
+APP_TITLE := NexPS
 APP_AUTHOR := joaqmiu
-APP_VERSION := 1.20
+APP_VERSION := rebirth
 APP_ICON := icon.png
 
 include $(DEVKITPRO)/libnx/switch_rules
 
-TARGET := npsp
+TARGET := NexPS
 BUILD := build
 SOURCES := source
 DATA := data
