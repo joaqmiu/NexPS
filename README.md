@@ -54,7 +54,7 @@ To compile **NexPS**, you must have the **devkitPro** environment installed with
 
 ## ⭐ Credits
 
-* **Developer**: [joaqmiu](https://github.com/joaqmiu) (Joaquim Sintra e Olivares)
+* **Developer**: [joaqmiu](https://github.com/joaqmiu) (Joaquim )
 * **Special Thanks**: 
     * Mestre Sion/Jann
     * NewsInside
