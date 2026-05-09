@@ -562,9 +562,11 @@ int main(int argc, char* argv[]) {
                     if(actual_idx == list_idx) printf("\x1b[47;30m");
                     
                     GameEntry *g = filtered_games[actual_idx];
-                    char dname[54];
-                    snprintf(dname, sizeof(dname), "%s", g->name);
-                    printf(" [%s][%s] %-50s \n", g->platform, g->region, dname);
+                    int plat_len = strlen(g->platform);
+                    int reg_len = strlen(g->region);
+                    int max_name_len = 71 - plat_len - reg_len;
+                    if (max_name_len < 10) max_name_len = 10;
+                    printf(" [%s][%s] %-*.*s \n", g->platform, g->region, max_name_len, max_name_len, g->name);
                     
                     if(actual_idx == list_idx) printf("\x1b[0m");
                 }
