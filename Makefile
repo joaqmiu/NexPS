@@ -1,7 +1,7 @@
 .SUFFIXES:
 
 ifeq ($(strip $(DEVKITPRO)),)
-$(error "Please set DEVKITPRO in your environment. export DEVKITPRO=<path to>devkitPro")
+$(error "Por favor, define DEVKITPRO no teu ambiente. export DEVKITPRO=<caminho para>devkitPro")
 endif
 
 TOPDIR ?= $(CURDIR)
@@ -27,7 +27,8 @@ CXXFLAGS := $(CFLAGS) -fno-rtti -fno-exceptions
 ASFLAGS := -g $(ARCH)
 LDFLAGS := -specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(NOTDIR).map
 
-LIBS := -lcurl -lmbedtls -lmbedx509 -lmbedcrypto -lz -lnx -lm
+# Bibliotecas atualizadas com dependências da libarchive
+LIBS := -larchive -llzma -lzstd -llz4 -lbz2 -lexpat -lcurl -lmbedtls -lmbedx509 -lmbedcrypto -lz -lnx -lm
 
 LIBDIRS := $(PORTLIBS) $(LIBNX)
 
