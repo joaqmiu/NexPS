@@ -29,19 +29,16 @@ typedef enum {
 } AppState;
 
 typedef enum {
-    FILTER_SEARCH,
     FILTER_ALL,
     FILTER_PSP,
     FILTER_PSX,
     FILTER_NUM,
-    FILTER_JP,
-    FILTER_LETTER
+    FILTER_JP
 } FilterMode;
 
 GameEntry *filtered_games[MAX_GAMES];
 int filtered_count = 0;
 char current_search[256] = "";
-char current_letter = 'A';
 FilterMode current_filter = FILTER_ALL;
 
 char dir_entries[MAX_DIRS][256];
@@ -54,16 +51,20 @@ int setting_path_mode = 1;
 void apply_filter() {
     filtered_count = 0;
     for(int i = 0; i < total_games; i++) {
-        int match = 0;
+        int match = 1;
+        
         switch(current_filter) {
-            case FILTER_ALL: match = 1; break;
-            case FILTER_PSP: if(stristr(all_games[i].platform, "PSP")) match = 1; break;
-            case FILTER_PSX: if(stristr(all_games[i].platform, "PSX")) match = 1; break;
-            case FILTER_SEARCH: if(stristr(all_games[i].name, current_search)) match = 1; break;
-            case FILTER_JP: if(stristr(all_games[i].region, "JP")) match = 1; break;
-            case FILTER_NUM: if(isdigit((unsigned char)all_games[i].name[0])) match = 1; break;
-            case FILTER_LETTER: if(toupper((unsigned char)all_games[i].name[0]) == current_letter) match = 1; break;
+            case FILTER_ALL: break;
+            case FILTER_PSP: if(stristr(all_games[i].platform, "PSP") == NULL) match = 0; break;
+            case FILTER_PSX: if(stristr(all_games[i].platform, "PSX") == NULL) match = 0; break;
+            case FILTER_NUM: if(!isdigit((unsigned char)all_games[i].name[0])) match = 0; break;
+            case FILTER_JP: if(stristr(all_games[i].region, "JP") == NULL) match = 0; break;
         }
+        
+        if(match && current_search[0] != '\0') {
+            if(stristr(all_games[i].name, current_search) == NULL) match = 0;
+        }
+        
         if(match) filtered_games[filtered_count++] = &all_games[i];
     }
 }
@@ -149,9 +150,8 @@ int main(int argc, char* argv[]) {
     int settings_idx = 0;
     int speed_idx = 1;
     
-    char letters[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-    const char *main_menu[] = {"SEARCH", "ALL GAMES", "PSP ONLY", "PSX ONLY", "# (NUMBERS)", "JAPAN (JP)", "SETTINGS", "ABOUT"};
-    int menu_size = 8 + 26; 
+    const char *main_menu[] = {"ALL GAMES", "PSP ONLY", "PSX ONLY", "# (NUMBERS)", "JAPAN (JP)", "SETTINGS", "ABOUT"};
+    int menu_size = 7; 
 
     const char *settings_menu[] = {"Set PSP Install Path", "Set PSX Install Path", "Download Cheats", "Back to Menu"};
     const char *speed_options[] = {"Slow/Stable", "Good/Recom.", "Fast/Unstable"};
@@ -254,10 +254,7 @@ int main(int argc, char* argv[]) {
             printf("\n");
             for(int i = 0; i < menu_size; i++) {
                 if(i == menu_idx) printf("\x1b[47;30m");
-                if(i < 8) printf(" %s \n", main_menu[i]);
-                else {
-                    printf(" %c \n", letters[i-8]);
-                }
+                printf(" %s \n", main_menu[i]);
                 if(i == menu_idx) printf("\x1b[0m");
             }
             
@@ -270,42 +267,29 @@ int main(int argc, char* argv[]) {
                 if (menu_idx > 0) menu_idx--;
             }
             if(move_right) {
-                if(menu_idx + 10 < menu_size) menu_idx += 10;
+                if(menu_idx + 3 < menu_size) menu_idx += 3;
                 else menu_idx = menu_size - 1;
             }
             if(move_left) {
-                if(menu_idx - 10 >= 0) menu_idx -= 10;
+                if(menu_idx - 3 >= 0) menu_idx -= 3;
                 else menu_idx = 0;
             }
             
             if(kDown & HidNpadButton_A) {
-                if(menu_idx == 0) {
-                    SwkbdConfig kbd;
-                    if (R_SUCCEEDED(swkbdCreate(&kbd, 0))) {
-                        swkbdConfigMakePresetDefault(&kbd);
-                        if (R_SUCCEEDED(swkbdShow(&kbd, current_search, sizeof(current_search)))) {
-                            current_filter = FILTER_SEARCH;
-                            apply_filter();
-                            state = STATE_LIST;
-                            list_idx = 0; list_top = 0;
-                        }
-                        swkbdClose(&kbd);
-                    }
-                } else if (menu_idx == 6) {
+                current_search[0] = '\0'; 
+                
+                if (menu_idx == 5) {
                     state = STATE_SETTINGS;
                     settings_idx = 0;
-                } else if (menu_idx == 7) {
+                } else if (menu_idx == 6) {
                     state = STATE_ABOUT;
                 } else {
-                    if(menu_idx == 1) current_filter = FILTER_ALL;
-                    else if(menu_idx == 2) current_filter = FILTER_PSP;
-                    else if(menu_idx == 3) current_filter = FILTER_PSX;
-                    else if(menu_idx == 4) current_filter = FILTER_NUM;
-                    else if(menu_idx == 5) current_filter = FILTER_JP;
-                    else {
-                        current_letter = letters[menu_idx - 8];
-                        current_filter = FILTER_LETTER;
-                    }
+                    if(menu_idx == 0) current_filter = FILTER_ALL;
+                    else if(menu_idx == 1) current_filter = FILTER_PSP;
+                    else if(menu_idx == 2) current_filter = FILTER_PSX;
+                    else if(menu_idx == 3) current_filter = FILTER_NUM;
+                    else if(menu_idx == 4) current_filter = FILTER_JP;
+                    
                     apply_filter();
                     state = STATE_LIST;
                     list_idx = 0; list_top = 0;
@@ -474,8 +458,12 @@ int main(int argc, char* argv[]) {
         }
         else if (state == STATE_LIST) {
             consoleClear();
-            char header_buf[64];
-            snprintf(header_buf, 64, "%s > RESULTS (%d)", APP_NAME, filtered_count);
+            char header_buf[512];
+            if (current_search[0] != '\0') {
+                snprintf(header_buf, sizeof(header_buf), "%s > RESULTS (%d) - \"%s\"", APP_NAME, filtered_count, current_search);
+            } else {
+                snprintf(header_buf, sizeof(header_buf), "%s > RESULTS (%d)", APP_NAME, filtered_count);
+            }
             ui_draw_header(header_buf);
 
             if(filtered_count == 0) printf("\n  No games found.\n");
@@ -494,7 +482,7 @@ int main(int argc, char* argv[]) {
                 }
             }
             
-            ui_draw_footer("[A] Download  [B] Back  [Arrows] Navigate");
+            ui_draw_footer("[A] Download  [B] Back  [Y] Search  [Arrows] Navigate");
 
             if(move_down) {
                 if(list_idx < filtered_count - 1) {
@@ -522,6 +510,18 @@ int main(int argc, char* argv[]) {
                 } else { list_idx = 0; list_top = 0; }
             }
             if(list_top < 0) list_top = 0;
+
+            if(kDown & HidNpadButton_Y) {
+                SwkbdConfig kbd;
+                if (R_SUCCEEDED(swkbdCreate(&kbd, 0))) {
+                    swkbdConfigMakePresetDefault(&kbd);
+                    if (R_SUCCEEDED(swkbdShow(&kbd, current_search, sizeof(current_search)))) {
+                        apply_filter();
+                        list_idx = 0; list_top = 0;
+                    }
+                    swkbdClose(&kbd);
+                }
+            }
 
             if(kDown & HidNpadButton_B) state = STATE_MENU;
             if(kDown & HidNpadButton_A && filtered_count > 0) {
