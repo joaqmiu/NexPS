@@ -8,7 +8,7 @@ TOPDIR ?= $(CURDIR)
 
 APP_TITLE := NexPS
 APP_AUTHOR := joaqmiu
-APP_VERSION := rebirth
+APP_VERSION := 1.1
 APP_ICON := icon.png
 
 include $(DEVKITPRO)/libnx/switch_rules
