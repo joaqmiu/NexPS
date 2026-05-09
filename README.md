@@ -19,9 +19,6 @@
 * **Multi-Platform Support:** Full integration of the PSX library alongside the existing PSP database. Includes platform-specific filtering and dedicated installation paths.
 * **Advanced Cryptographic Extraction:** Native on-device C implementation to extract and decrypt `EBOOT.PBP` files from PKG containers. For PSX titles, NexPS automatically unpacks the `DATA.PSAR` archive into a `.BIN` file, generates a corresponding `.CUE` sheet, and dumps the `KEYS.BIN` license file.
 * **Dynamic Custom Consoles:** Add new consoles and ROM lists on the fly by fetching metadata directly from public Internet Archive collections.
-* **Asynchronous Multi-Threaded Downloading:** Configurable connection pooling (1, 4, or 8 threads) to maximize network throughput and minimize download latency.
-* **Dynamic File Management:** Built-in directory browser to assign target installation paths directly via the Switch UI, eliminating the need for manual text entry.
-* **Robust Filtering System:** Real-time search and sorting capabilities, including alphabetical index, region isolation (e.g., JP), and platform-specific views.
 
 ---
 
