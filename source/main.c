@@ -686,8 +686,25 @@ int main(int argc, char* argv[]) {
 
             if(result == 1) {
                 if (is_custom) {
-                    printf("\n\n  \x1b[1;32mDONE!\x1b[0m\n");
-                    printf("  Saved to: %s\n", file_path);
+                    int is_archive = (stristr(file_path, ".zip") != NULL || 
+                                      stristr(file_path, ".7z") != NULL || 
+                                      stristr(file_path, ".rar") != NULL);
+                    if (is_archive) {
+                        printf("\n\n  EXTRACTING ARCHIVE...\n");
+                        ui_draw_footer("Please wait...");
+                        consoleUpdate(NULL);
+                        
+                        if (extract_archive(file_path, target_dir)) {
+                            remove(file_path);
+                            printf("\n\n  \x1b[1;32mEXTRACTION DONE!\x1b[0m\n");
+                            printf("  Saved to: %s\n", target_dir);
+                        } else {
+                            printf("\n\n  \x1b[1;31mEXTRACTION ERROR.\x1b[0m\n");
+                        }
+                    } else {
+                        printf("\n\n  \x1b[1;32mDONE!\x1b[0m\n");
+                        printf("  Saved to: %s\n", file_path);
+                    }
                     printf("\n\n  Press A to return...");
                     ui_draw_footer("[A] Continue");
                 } else {

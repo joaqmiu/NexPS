@@ -2,11 +2,19 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <unistd.h>
+#include <sys/stat.h>
 #include <switch.h>
 #include <mbedtls/aes.h>
 #include <zlib.h>
+#include <archive.h>
+#include <archive_entry.h>
 #include "converter.h"
 #include "common.h"
+
+mode_t umask(mode_t mask) {
+    return 022;
+}
 
 #define CHUNK_SIZE (64 * 1024)
 
@@ -284,4 +292,57 @@ int extract_game_from_pkg(const char *input_pkg, const char *output_dir, const c
         printf("\n\n  \x1b[1;32mPSP PBP extracted.\x1b[0m\n");
         return 1;
     }
+}
+
+int extract_archive(const char *filename, const char *dest_dir) {
+    struct archive *a;
+    struct archive *ext;
+    struct archive_entry *entry;
+    int flags = ARCHIVE_EXTRACT_TIME | ARCHIVE_EXTRACT_PERM | ARCHIVE_EXTRACT_ACL | ARCHIVE_EXTRACT_FFLAGS;
+    int r;
+
+    char current_dir[1024];
+    getcwd(current_dir, sizeof(current_dir));
+    chdir(dest_dir);
+
+    a = archive_read_new();
+    archive_read_support_format_all(a);
+    archive_read_support_filter_all(a);
+    ext = archive_write_disk_new();
+    archive_write_disk_set_options(ext, flags);
+    
+    // LINHA REMOVIDA AQUI: archive_write_disk_set_standard_lookup(ext);
+    // Removemos isso para evitar erros de getpwnam e getgrnam no Switch.
+
+    if ((r = archive_read_open_filename(a, filename, 10240))) {
+        chdir(current_dir);
+        archive_write_free(ext);
+        archive_read_free(a);
+        return 0;
+    }
+
+    int success = 1;
+    while (archive_read_next_header(a, &entry) == ARCHIVE_OK) {
+        r = archive_write_header(ext, entry);
+        if (r == ARCHIVE_OK) {
+            const void *buff;
+            size_t size;
+            int64_t offset;
+            while (archive_read_data_block(a, &buff, &size, &offset) == ARCHIVE_OK) {
+                if (archive_write_data_block(ext, buff, size, offset) != ARCHIVE_OK) {
+                    success = 0;
+                    break;
+                }
+            }
+            archive_write_finish_entry(ext);
+        }
+    }
+    
+    archive_read_close(a);
+    archive_read_free(a);
+    archive_write_close(ext);
+    archive_write_free(ext);
+    chdir(current_dir);
+    
+    return success;
 }
