@@ -31,6 +31,8 @@ typedef enum {
 typedef enum {
     FILTER_SEARCH,
     FILTER_ALL,
+    FILTER_PSP,
+    FILTER_PSX,
     FILTER_NUM,
     FILTER_JP,
     FILTER_LETTER
@@ -41,13 +43,13 @@ int filtered_count = 0;
 char current_search[256] = "";
 char current_letter = 'A';
 FilterMode current_filter = FILTER_ALL;
-int selected_threads = 4;
 
 char dir_entries[MAX_DIRS][256];
 int dir_count = 0;
 char current_browse_path[512] = "/";
 int dir_idx = 0;
 int dir_top = 0;
+int setting_path_mode = 1; 
 
 void apply_filter() {
     filtered_count = 0;
@@ -55,6 +57,8 @@ void apply_filter() {
         int match = 0;
         switch(current_filter) {
             case FILTER_ALL: match = 1; break;
+            case FILTER_PSP: if(stristr(all_games[i].platform, "PSP")) match = 1; break;
+            case FILTER_PSX: if(stristr(all_games[i].platform, "PSX")) match = 1; break;
             case FILTER_SEARCH: if(stristr(all_games[i].name, current_search)) match = 1; break;
             case FILTER_JP: if(stristr(all_games[i].region, "JP")) match = 1; break;
             case FILTER_NUM: if(isdigit((unsigned char)all_games[i].name[0])) match = 1; break;
@@ -128,7 +132,7 @@ int main(int argc, char* argv[]) {
     nxlinkStdio();
     consoleInit(NULL);
     
-    mkdir_p("/switch/NexPS");
+    mkdir_p(APP_DIR);
     load_config(); 
 
     db_buffer = (char*)malloc(DB_BUFFER_SIZE);
@@ -146,10 +150,10 @@ int main(int argc, char* argv[]) {
     int speed_idx = 1;
     
     char letters[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-    const char *main_menu[] = {"SEARCH", "ALL GAMES", "# (NUMBERS)", "JAPAN (JP)", "SETTINGS", "ABOUT"};
-    int menu_size = 6 + 26; 
+    const char *main_menu[] = {"SEARCH", "ALL GAMES", "PSP ONLY", "PSX ONLY", "# (NUMBERS)", "JAPAN (JP)", "SETTINGS", "ABOUT"};
+    int menu_size = 8 + 26; 
 
-    const char *settings_menu[] = {"Set Install Path", "Download Cheats", "Back to Menu"};
+    const char *settings_menu[] = {"Set PSP Install Path", "Set PSX Install Path", "Download Cheats", "Back to Menu"};
     const char *speed_options[] = {"Slow/Stable", "Good/Recom.", "Fast/Unstable"};
 
     int v_timer = 0;
@@ -188,43 +192,71 @@ int main(int argc, char* argv[]) {
 
         if (state == STATE_LOADING) {
             consoleClear();
-            ui_draw_header("NexPS rebirth loading...");
-            printf("\n  Downloading Database...\n");
+            char head[128];
+            snprintf(head, sizeof(head), "%s v%s - LOADING...", APP_NAME, APP_VERSION);
+            ui_draw_header(head);
+            printf("\n  Downloading Databases...\n");
             ui_draw_footer("Please wait...");
             consoleUpdate(NULL);
             
-            struct MemoryStruct chunk = {malloc(1), 0};
+            total_games = 0;
+            struct MemoryStruct chunk_psp = {malloc(1), 0};
+            struct MemoryStruct chunk_psx = {malloc(1), 0};
+            
             CURL *curl = curl_easy_init();
             if(curl) {
-                curl_easy_setopt(curl, CURLOPT_URL, URL_NPS_PSP);
                 curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-                curl_easy_setopt(curl, CURLOPT_WRITEDATA, &chunk);
                 curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
                 curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+                
+                curl_easy_setopt(curl, CURLOPT_URL, URL_NPS_PSP);
+                curl_easy_setopt(curl, CURLOPT_WRITEDATA, &chunk_psp);
                 curl_easy_perform(curl);
+                
+                curl_easy_setopt(curl, CURLOPT_URL, URL_NPS_PSX);
+                curl_easy_setopt(curl, CURLOPT_WRITEDATA, &chunk_psx);
+                curl_easy_perform(curl);
+                
                 curl_easy_cleanup(curl);
             }
-            if(chunk.size > 0 && chunk.size < DB_BUFFER_SIZE) {
-                memcpy(db_buffer, chunk.memory, chunk.size);
-                db_buffer[chunk.size] = '\0';
-                parse_db(db_buffer);
+            
+            size_t total_size = chunk_psp.size + chunk_psx.size;
+            if(total_size > 0 && total_size < DB_BUFFER_SIZE - 2) {
+                size_t offset = 0;
+                
+                if (chunk_psp.size > 0) {
+                    memcpy(db_buffer, chunk_psp.memory, chunk_psp.size);
+                    db_buffer[chunk_psp.size] = '\0';
+                    parse_db(db_buffer, "PSP");
+                    offset += chunk_psp.size + 1;
+                }
+                
+                if (chunk_psx.size > 0) {
+                    memcpy(db_buffer + offset, chunk_psx.memory, chunk_psx.size);
+                    db_buffer[offset + chunk_psx.size] = '\0';
+                    parse_db(db_buffer + offset, "PSX");
+                }
+                
                 state = STATE_MENU;
             } else {
                 printf("\n  DB Error. Check internet connection.\n");
                 while(1) { padUpdate(&pad); consoleUpdate(NULL); }
             }
-            free(chunk.memory);
+            free(chunk_psp.memory);
+            free(chunk_psx.memory);
         }
         else if (state == STATE_MENU) {
             consoleClear();
-            ui_draw_header("NexPS rebirth - by joaqmiu");
+            char head[128];
+            snprintf(head, sizeof(head), "%s v%s", APP_NAME, APP_VERSION);
+            ui_draw_header(head);
             
             printf("\n");
             for(int i = 0; i < menu_size; i++) {
                 if(i == menu_idx) printf("\x1b[47;30m");
-                if(i < 6) printf(" %s \n", main_menu[i]);
+                if(i < 8) printf(" %s \n", main_menu[i]);
                 else {
-                    printf(" %c \n", letters[i-6]);
+                    printf(" %c \n", letters[i-8]);
                 }
                 if(i == menu_idx) printf("\x1b[0m");
             }
@@ -259,17 +291,19 @@ int main(int argc, char* argv[]) {
                         }
                         swkbdClose(&kbd);
                     }
-                } else if (menu_idx == 4) {
+                } else if (menu_idx == 6) {
                     state = STATE_SETTINGS;
                     settings_idx = 0;
-                } else if (menu_idx == 5) {
+                } else if (menu_idx == 7) {
                     state = STATE_ABOUT;
                 } else {
                     if(menu_idx == 1) current_filter = FILTER_ALL;
-                    else if(menu_idx == 2) current_filter = FILTER_NUM;
-                    else if(menu_idx == 3) current_filter = FILTER_JP;
+                    else if(menu_idx == 2) current_filter = FILTER_PSP;
+                    else if(menu_idx == 3) current_filter = FILTER_PSX;
+                    else if(menu_idx == 4) current_filter = FILTER_NUM;
+                    else if(menu_idx == 5) current_filter = FILTER_JP;
                     else {
-                        current_letter = letters[menu_idx - 6];
+                        current_letter = letters[menu_idx - 8];
                         current_filter = FILTER_LETTER;
                     }
                     apply_filter();
@@ -280,10 +314,11 @@ int main(int argc, char* argv[]) {
         }
         else if (state == STATE_ABOUT) {
             consoleClear();
-            ui_draw_header("NexPS rebirth - ABOUT");
+            char head[128];
+            snprintf(head, sizeof(head), "%s v%s - ABOUT", APP_NAME, APP_VERSION);
+            ui_draw_header(head);
             
             printf("\n");
-            printf("  Dev: joaqmiu ( Joaquim )\n");
             printf("  Repo: https://github.com/joaqmiu/NexPS\n\n");
             printf("  Special thanks:\n");
             printf("  - Mestre Sion/Jann\n");
@@ -299,13 +334,16 @@ int main(int argc, char* argv[]) {
         }
         else if (state == STATE_SETTINGS) {
             consoleClear();
-            ui_draw_header("NexPS rebirth - SETTINGS");
+            char head[128];
+            snprintf(head, sizeof(head), "%s v%s - SETTINGS", APP_NAME, APP_VERSION);
+            ui_draw_header(head);
             
             printf("\n");
-            for(int i = 0; i < 3; i++) {
+            for(int i = 0; i < 4; i++) {
                 if(i == settings_idx) printf("\x1b[47;30m");
                 
-                if(i == 0) printf(" %s: %s \n", settings_menu[i], install_path);
+                if(i == 0) printf(" %s: %s \n", settings_menu[i], install_path_psp);
+                else if(i == 1) printf(" %s: %s \n", settings_menu[i], install_path_psx);
                 else printf(" %s \n", settings_menu[i]);
                 
                 if(i == settings_idx) printf("\x1b[0m");
@@ -314,25 +352,26 @@ int main(int argc, char* argv[]) {
             ui_draw_footer("[A] Select  [B] Back");
 
             if(move_down) {
-                if(settings_idx < 2) settings_idx++;
+                if(settings_idx < 3) settings_idx++;
             }
             if(move_up) {
                 if(settings_idx > 0) settings_idx--;
             }
             
             if(kDown & HidNpadButton_A) {
-                if(settings_idx == 0) {
+                if(settings_idx == 0 || settings_idx == 1) {
+                    setting_path_mode = (settings_idx == 0) ? 1 : 2;
                     strcpy(current_browse_path, "/");
                     load_dir_list(current_browse_path);
                     dir_idx = 0;
                     dir_top = 0;
                     state = STATE_BROWSE_DIR;
                 }
-                else if(settings_idx == 1) {
+                else if(settings_idx == 2) {
                     mkdir_p("/switch/ppsspp/config/ppsspp/PSP/Cheats");
                     int res = download_file(URL_CHEATS, "/switch/ppsspp/config/ppsspp/PSP/Cheats/cheat.db", &pad, "DOWNLOADING CHEATS...", 1);
                     consoleClear();
-                    ui_draw_header("NexPS - Cheats");
+                    ui_draw_header(APP_NAME " - Cheats");
                     if(res == 1) printf("\n\n  \x1b[1;32mDONE!\x1b[0m\n");
                     else printf("\n\n  \x1b[1;31mDOWNLOAD ERROR.\x1b[0m\n");
                     printf("  Press A to return...");
@@ -343,7 +382,7 @@ int main(int argc, char* argv[]) {
                         if(padGetButtonsDown(&pad) & HidNpadButton_A) break;
                     }
                 }
-                else if(settings_idx == 2) {
+                else if(settings_idx == 3) {
                     state = STATE_MENU;
                 }
             }
@@ -352,7 +391,7 @@ int main(int argc, char* argv[]) {
         else if (state == STATE_BROWSE_DIR) {
             consoleClear();
             char header_buf[600];
-            snprintf(header_buf, sizeof(header_buf), "NexPS > BROWSE: %s", current_browse_path);
+            snprintf(header_buf, sizeof(header_buf), "%s > BROWSE: %s", APP_NAME, current_browse_path);
             ui_draw_header(header_buf);
 
             if (dir_count == 0) {
@@ -403,8 +442,13 @@ int main(int argc, char* argv[]) {
             }
             
             if (kDown & HidNpadButton_X) {
-                strncpy(install_path, current_browse_path, sizeof(install_path) - 1);
-                install_path[sizeof(install_path) - 1] = '\0';
+                if (setting_path_mode == 1) {
+                    strncpy(install_path_psp, current_browse_path, sizeof(install_path_psp) - 1);
+                    install_path_psp[sizeof(install_path_psp) - 1] = '\0';
+                } else {
+                    strncpy(install_path_psx, current_browse_path, sizeof(install_path_psx) - 1);
+                    install_path_psx[sizeof(install_path_psx) - 1] = '\0';
+                }
                 save_config();
                 state = STATE_SETTINGS;
             }
@@ -431,7 +475,7 @@ int main(int argc, char* argv[]) {
         else if (state == STATE_LIST) {
             consoleClear();
             char header_buf[64];
-            snprintf(header_buf, 64, "NexPS > RESULTS (%d)", filtered_count);
+            snprintf(header_buf, 64, "%s > RESULTS (%d)", APP_NAME, filtered_count);
             ui_draw_header(header_buf);
 
             if(filtered_count == 0) printf("\n  No games found.\n");
@@ -442,9 +486,9 @@ int main(int argc, char* argv[]) {
                     if(actual_idx == list_idx) printf("\x1b[47;30m");
                     
                     GameEntry *g = filtered_games[actual_idx];
-                    char dname[60];
-                    strncpy(dname, g->name, 59); dname[59] = '\0';
-                    printf(" [%s] %-55s \n", g->region, dname);
+                    char dname[54];
+                    strncpy(dname, g->name, 53); dname[53] = '\0';
+                    printf(" [%s][%s] %-50s \n", g->platform, g->region, dname);
                     
                     if(actual_idx == list_idx) printf("\x1b[0m");
                 }
@@ -520,14 +564,15 @@ int main(int argc, char* argv[]) {
             strncpy(safe_name, g->name, 255); safe_name[255] = '\0';
             sanitize_filename(safe_name);
             
-            mkdir_p(install_path);
+            int is_psx = (stristr(g->platform, "PSX") != NULL);
+            const char *target_dir = is_psx ? install_path_psx : install_path_psp;
+            mkdir_p(target_dir);
             
-            char pkg_path[1024], pbp_path[1024];
-            snprintf(pkg_path, sizeof(pkg_path), "%s/%s_temp.pkg", install_path, safe_name);
-            snprintf(pbp_path, sizeof(pbp_path), "%s/%s.PBP", install_path, safe_name);
+            char pkg_path[1024];
+            snprintf(pkg_path, sizeof(pkg_path), "%s/%s_temp.pkg", target_dir, safe_name);
             
             char header_buf[128];
-            snprintf(header_buf, 128, "NexPS > DOWNLOADING PKG...");
+            snprintf(header_buf, 128, "%s > DOWNLOADING PKG...", APP_NAME);
 
             int result = download_file(g->url, pkg_path, &pad, header_buf, selected_threads);
             
@@ -537,19 +582,18 @@ int main(int argc, char* argv[]) {
             if(result == 1) {
                 state = STATE_CONVERTING;
                 
-                printf("\n\n  CONVERTING...\n");
+                printf("\n\n  PROCESSING FILES...\n");
                 ui_draw_footer("Please wait...");
                 consoleUpdate(NULL); 
 
-                if (convert_pkg_to_pbp(pkg_path, pbp_path)) {
+                if (extract_game_from_pkg(pkg_path, target_dir, safe_name, is_psx)) {
                     remove(pkg_path); 
-                    printf("\n\n  \x1b[1;32mDONE!\x1b[0m\n");
-                    printf("  Saved to: %s\n", pbp_path);
+                    printf("  Saved to directory: %s\n", target_dir);
                 } else {
-                    printf("\n\n  \x1b[1;31mERROR.\x1b[0m\n");
+                    printf("\n\n  \x1b[1;31mPROCESSING ERROR.\x1b[0m\n");
                     remove(pkg_path); 
-                    remove(pbp_path);
                 }
+                
                 printf("\n\n  Press A to return...");
                 ui_draw_footer("[A] Continue");
             } else if (result == -1) {

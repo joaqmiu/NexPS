@@ -6,10 +6,15 @@
 #include <stdio.h>
 #include <switch.h>
 
-#define MAX_GAMES 6000
-#define DB_BUFFER_SIZE (6 * 1024 * 1024)
-#define CONFIG_PATH "/switch/NexPS/settings.dat"
-#define DEFAULT_INSTALL_PATH "/tico/roms/psp"
+#define APP_NAME "NexPS"
+#define APP_VERSION "1.1"
+#define APP_DIR "/switch/" APP_NAME
+#define CONFIG_PATH APP_DIR "/settings.dat"
+
+#define MAX_GAMES 15000
+#define DB_BUFFER_SIZE (12 * 1024 * 1024)
+#define DEFAULT_INSTALL_PATH_PSP "/tico/roms/psp"
+#define DEFAULT_INSTALL_PATH_PSX "/tico/roms/psx"
 
 typedef struct {
     char *id;
@@ -20,14 +25,15 @@ typedef struct {
 } GameEntry;
 
 extern int selected_threads;
-extern char install_path[512];
+extern char install_path_psp[512];
+extern char install_path_psx[512];
 
 void load_config();
 void save_config();
 
 static inline void ui_draw_header(const char *title) {
     printf("\x1b[0;0H"); 
-    printf("\x1b[46;30m"); 
+    printf("\x1b[45;37m"); 
     char buf[81];
     snprintf(buf, sizeof(buf), " %-78.78s", title);
     printf("%s", buf);
@@ -36,7 +42,7 @@ static inline void ui_draw_header(const char *title) {
 
 static inline void ui_draw_footer(const char *text) {
     printf("\x1b[44;0H"); 
-    printf("\x1b[47;30m"); 
+    printf("\x1b[45;37m"); 
     char buf[81];
     snprintf(buf, sizeof(buf), " %-78.78s", text);
     printf("%s", buf);

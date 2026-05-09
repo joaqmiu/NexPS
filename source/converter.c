@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <switch.h>
 #include <mbedtls/aes.h>
+#include <zlib.h>
 #include "converter.h"
 #include "common.h"
 
@@ -31,17 +32,17 @@ static void calculate_iv(unsigned char *out, const unsigned char *base_iv, uint6
     }
 }
 
-static void draw_conversion_progress(size_t current, size_t total) {
+static void draw_conversion_progress(size_t current, size_t total, const char* label) {
     static int last_percent_conv = -1;
     double fraction = (double)current / (double)total;
     int percent = (int)(fraction * 100);
 
     if (percent != last_percent_conv) {
         last_percent_conv = percent;
-        int bar_width = 40;
+        int bar_width = 30;
         int pos = bar_width * fraction;
 
-        printf("\r\x1b[K [");
+        printf("\r\x1b[K  %s [", label);
         for (int i = 0; i < bar_width; ++i) {
             if (i < pos) printf("=");
             else if (i == pos) printf(">");
@@ -52,7 +53,69 @@ static void draw_conversion_progress(size_t current, size_t total) {
     }
 }
 
-int convert_pkg_to_pbp(const char *input_pkg, const char *output_pbp) {
+static void generate_cue_file(const char *cue_path, const char *bin_filename) {
+    FILE *f = fopen(cue_path, "w");
+    if (f) {
+        fprintf(f, "FILE \"%s\" BINARY\n", bin_filename);
+        fprintf(f, "  TRACK 01 MODE2/2352\n");
+        fprintf(f, "    INDEX 01 00:00:00\n");
+        fclose(f);
+    }
+}
+
+static int extract_psar_to_bin(const char *pbp_path, const char *bin_path) {
+    FILE *fpbp = fopen(pbp_path, "rb");
+    if (!fpbp) return 0;
+
+    uint32_t header[10];
+    if (fread(header, sizeof(uint32_t), 10, fpbp) != 10) {
+        fclose(fpbp);
+        return 0;
+    }
+
+    if (header[0] != 0x50425000) { 
+        fclose(fpbp);
+        return 0;
+    }
+
+    uint32_t psar_offset = header[9]; 
+    
+    fseek(fpbp, 0, SEEK_END);
+    uint32_t file_size = ftell(fpbp);
+    if (psar_offset == 0 || psar_offset >= file_size) {
+        fclose(fpbp);
+        return 0;
+    }
+
+    uint32_t psar_size = file_size - psar_offset;
+    
+    FILE *fbin = fopen(bin_path, "wb");
+    if (!fbin) {
+        fclose(fpbp);
+        return 0;
+    }
+
+    fseek(fpbp, psar_offset, SEEK_SET);
+    unsigned char *buffer = malloc(CHUNK_SIZE);
+    uint32_t remaining = psar_size;
+
+    printf("\n");
+    while (remaining > 0) {
+        size_t to_read = (remaining < CHUNK_SIZE) ? remaining : CHUNK_SIZE;
+        size_t r = fread(buffer, 1, to_read, fpbp);
+        if (r == 0) break;
+        fwrite(buffer, 1, r, fbin);
+        remaining -= r;
+        draw_conversion_progress(psar_size - remaining, psar_size, "BIN Extraction");
+    }
+
+    free(buffer);
+    fclose(fbin);
+    fclose(fpbp);
+    return 1;
+}
+
+int extract_game_from_pkg(const char *input_pkg, const char *output_dir, const char *safe_name, int is_psx) {
     FILE *fd = fopen(input_pkg, "rb");
     if (!fd) return 0;
 
@@ -75,8 +138,7 @@ int convert_pkg_to_pbp(const char *input_pkg, const char *output_pbp) {
 
     uint32_t items_offset = 0;
     uint32_t current_meta = meta_offset;
-    int found_index = 0;
-
+    
     for (uint32_t i = 0; i < meta_count; i++) {
         unsigned char block[16];
         fseek(fd, current_meta, SEEK_SET);
@@ -85,21 +147,18 @@ int convert_pkg_to_pbp(const char *input_pkg, const char *output_pbp) {
         uint32_t type = swap32(*(uint32_t*)(block + 0));
         uint32_t size = swap32(*(uint32_t*)(block + 4));
 
-        if (type == 13) {
-            items_offset = swap32(*(uint32_t*)(block + 8));
-            found_index = 1;
-        }
+        if (type == 13) items_offset = swap32(*(uint32_t*)(block + 8));
         current_meta += 8 + size;
-    }
-
-    if (!found_index && item_count > 0) {
-        printf("\nWarning: Index not found.\n");
     }
 
     mbedtls_aes_context aes;
     unsigned char current_iv[16];
     unsigned char stream_block[16];
     size_t nc_off = 0;
+    
+    char pbp_temp_path[1024];
+    snprintf(pbp_temp_path, sizeof(pbp_temp_path), "%s/EBOOT.PBP", output_dir);
+    int pbp_extracted = 0;
 
     for (uint32_t i = 0; i < item_count; i++) {
         uint32_t entry_offset = items_offset + (i * 32);
@@ -135,46 +194,58 @@ int convert_pkg_to_pbp(const char *input_pkg, const char *output_pbp) {
         name_dec[name_size] = '\0';
 
         if (stristr((char*)name_dec, "EBOOT.PBP")) {
-            printf("\nExtracting: %s (%.2f MB)\n", name_dec, (double)data_size / 1024.0 / 1024.0);
+            printf("\n  Decrypting: %s\n", is_psx ? "PSX Base (PBP)" : "PSP Game (PBP)");
             
-            FILE *fout = fopen(output_pbp, "wb");
-            if (!fout) {
-                free(name_enc); free(name_dec); fclose(fd);
-                return 0;
+            FILE *fout = fopen(pbp_temp_path, "wb");
+            if (fout) {
+                unsigned char *chunk_buf = malloc(CHUNK_SIZE);
+                unsigned char *chunk_dec = malloc(CHUNK_SIZE);
+                uint64_t remaining = data_size;
+                uint64_t current_file_pos = data_offset;
+
+                while (remaining > 0) {
+                    size_t len = (remaining < CHUNK_SIZE) ? remaining : CHUNK_SIZE;
+                    fseek(fd, enc_offset + current_file_pos, SEEK_SET);
+                    fread(chunk_buf, 1, len, fd);
+
+                    calculate_iv(current_iv, iv, current_file_pos / 16);
+                    mbedtls_aes_setkey_enc(&aes, PKG_KEY, 128);
+                    nc_off = 0;
+                    memset(stream_block, 0, 16);
+                    mbedtls_aes_crypt_ctr(&aes, len, &nc_off, current_iv, stream_block, chunk_buf, chunk_dec);
+
+                    fwrite(chunk_dec, 1, len, fout);
+                    remaining -= len;
+                    current_file_pos += len;
+                    draw_conversion_progress(data_size - remaining, data_size, "Decryption");
+                }
+                free(chunk_buf);
+                free(chunk_dec);
+                fclose(fout);
+                pbp_extracted = 1;
             }
+        } 
+        else if (is_psx && stristr((char*)name_dec, "KEYS.BIN")) {
+            char keys_path[1024];
+            snprintf(keys_path, sizeof(keys_path), "%s/%s.KEYS.BIN", output_dir, safe_name);
+            FILE *fout = fopen(keys_path, "wb");
+            if (fout) {
+                unsigned char *chunk_buf = malloc(data_size);
+                unsigned char *chunk_dec = malloc(data_size);
+                fseek(fd, enc_offset + data_offset, SEEK_SET);
+                fread(chunk_buf, 1, data_size, fd);
 
-            unsigned char *chunk_buf = malloc(CHUNK_SIZE);
-            unsigned char *chunk_dec = malloc(CHUNK_SIZE);
-            uint64_t remaining = data_size;
-            uint64_t current_file_pos = data_offset;
-
-            while (remaining > 0) {
-                size_t len = (remaining < CHUNK_SIZE) ? remaining : CHUNK_SIZE;
-                
-                fseek(fd, enc_offset + current_file_pos, SEEK_SET);
-                fread(chunk_buf, 1, len, fd);
-
-                calculate_iv(current_iv, iv, current_file_pos / 16);
+                calculate_iv(current_iv, iv, data_offset / 16);
                 mbedtls_aes_setkey_enc(&aes, PKG_KEY, 128);
                 nc_off = 0;
                 memset(stream_block, 0, 16);
-                mbedtls_aes_crypt_ctr(&aes, len, &nc_off, current_iv, stream_block, chunk_buf, chunk_dec);
+                mbedtls_aes_crypt_ctr(&aes, data_size, &nc_off, current_iv, stream_block, chunk_buf, chunk_dec);
 
-                fwrite(chunk_dec, 1, len, fout);
-                
-                remaining -= len;
-                current_file_pos += len;
-                draw_conversion_progress(data_size - remaining, data_size);
+                fwrite(chunk_dec, 1, data_size, fout);
+                free(chunk_buf);
+                free(chunk_dec);
+                fclose(fout);
             }
-
-            free(chunk_buf);
-            free(chunk_dec);
-            fclose(fout);
-            free(name_enc);
-            free(name_dec);
-            mbedtls_aes_free(&aes);
-            fclose(fd);
-            return 1;
         }
 
         free(name_enc);
@@ -182,7 +253,35 @@ int convert_pkg_to_pbp(const char *input_pkg, const char *output_pbp) {
         mbedtls_aes_free(&aes);
     }
 
-    printf("\nEBOOT.PBP not found.\n");
     fclose(fd);
-    return 0;
+
+    if (!pbp_extracted) {
+        printf("\nEBOOT.PBP not found in PKG.\n");
+        return 0;
+    }
+
+    if (is_psx) {
+        char bin_path[1024], cue_path[1024];
+        char bin_filename[256];
+        
+        snprintf(bin_filename, sizeof(bin_filename), "%s.BIN", safe_name);
+        snprintf(bin_path, sizeof(bin_path), "%s/%s", output_dir, bin_filename);
+        snprintf(cue_path, sizeof(cue_path), "%s/%s.CUE", output_dir, safe_name);
+
+        printf("\n  Unpacking PSAR to BIN/CUE...\n");
+        if (extract_psar_to_bin(pbp_temp_path, bin_path)) {
+            generate_cue_file(cue_path, bin_filename);
+            remove(pbp_temp_path);
+            printf("\n\n  \x1b[1;32mPSX CUE/BIN created.\x1b[0m\n");
+            return 1;
+        } else {
+            return 0;
+        }
+    } else {
+        char final_pbp_path[1024];
+        snprintf(final_pbp_path, sizeof(final_pbp_path), "%s/%s.PBP", output_dir, safe_name);
+        rename(pbp_temp_path, final_pbp_path);
+        printf("\n\n  \x1b[1;32mPSP PBP extracted.\x1b[0m\n");
+        return 1;
+    }
 }

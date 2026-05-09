@@ -85,7 +85,7 @@ static CURL *make_part_handle(const char *url, PartContext *ctx) {
     curl_easy_setopt(h, CURLOPT_RANGE, range_buf);
     curl_easy_setopt(h, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(h, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(h, CURLOPT_USERAGENT, "NPS-Switch/4.0");
+    curl_easy_setopt(h, CURLOPT_USERAGENT, APP_NAME "/" APP_VERSION);
     curl_easy_setopt(h, CURLOPT_CONNECTTIMEOUT, 15L);
     curl_easy_setopt(h, CURLOPT_TIMEOUT, 600L);
     curl_easy_setopt(h, CURLOPT_LOW_SPEED_TIME, 20L);
@@ -268,31 +268,47 @@ int download_file(const char *url, const char *path, PadState *pad, const char *
     return (final_size >= file_size);
 }
 
-void parse_db(char *data) {
+void parse_db(char *data, const char *platform) {
     char *line = data;
-    total_games = 0;
+    int is_psx = (strcmp(platform, "PSX") == 0);
+    
     while (line && total_games < MAX_GAMES) {
         char *next_line = strchr(line, '\n');
         if (next_line) *next_line = '\0';
+        
         if (strlen(line) > 10) {
             char *cols[10];
             int col_count = 0;
             char *ptr = line;
             cols[col_count++] = ptr;
-            while (*ptr && col_count < 6) {
-                if (*ptr == '\t') { *ptr = '\0'; cols[col_count++] = ptr + 1; }
+            
+            while (*ptr && col_count < 10) {
+                if (*ptr == '\t') { 
+                    *ptr = '\0'; 
+                    cols[col_count++] = ptr + 1; 
+                }
                 ptr++;
             }
-            if (col_count >= 5) {
-                if (stristr(cols[2], "NEOGEO") == NULL &&
-                    stristr(cols[2], "PC Engine") == NULL &&
-                    stristr(cols[4], "http")) {
+            
+            if (is_psx) {
+                if (col_count >= 4 && stristr(cols[3], "http")) {
                     all_games[total_games].id = cols[0];
                     all_games[total_games].region = cols[1];
-                    all_games[total_games].platform = cols[2];
-                    all_games[total_games].name = cols[3];
-                    all_games[total_games].url = cols[4];
+                    all_games[total_games].platform = "PSX";
+                    all_games[total_games].name = cols[2];
+                    all_games[total_games].url = cols[3];
                     total_games++;
+                }
+            } else {
+                if (col_count >= 5 && stristr(cols[4], "http")) {
+                    if (stristr(cols[2], "NEOGEO") == NULL && stristr(cols[2], "PC Engine") == NULL) {
+                        all_games[total_games].id = cols[0];
+                        all_games[total_games].region = cols[1];
+                        all_games[total_games].platform = "PSP";
+                        all_games[total_games].name = cols[3];
+                        all_games[total_games].url = cols[4];
+                        total_games++;
+                    }
                 }
             }
         }
