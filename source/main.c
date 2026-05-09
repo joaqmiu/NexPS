@@ -12,12 +12,14 @@
 #include "common.h"
 #include "converter.h"
 #include "net.h"
+#include "ia_manager.h"
 
 #define PAGE_SIZE 37
 #define MAX_DIRS 256
 
 typedef enum {
     STATE_LOADING,
+    STATE_LOADING_IA,
     STATE_MENU,
     STATE_LIST,
     STATE_SELECT_SPEED,
@@ -25,15 +27,15 @@ typedef enum {
     STATE_CONVERTING,
     STATE_SETTINGS,
     STATE_ABOUT,
-    STATE_BROWSE_DIR
+    STATE_BROWSE_DIR,
+    STATE_CONFIRM_DELETE
 } AppState;
 
 typedef enum {
     FILTER_ALL,
     FILTER_PSP,
     FILTER_PSX,
-    FILTER_NUM,
-    FILTER_JP
+    FILTER_CUSTOM
 } FilterMode;
 
 GameEntry *filtered_games[MAX_GAMES];
@@ -48,6 +50,13 @@ int dir_idx = 0;
 int dir_top = 0;
 int setting_path_mode = 1; 
 
+int nps_total_games = 0;
+int loading_custom_idx = 0;
+char current_custom_platform[64] = "";
+char pending_console_name[64] = "";
+char pending_console_id[128] = "";
+int delete_confirm_idx = 0;
+
 void apply_filter() {
     filtered_count = 0;
     for(int i = 0; i < total_games; i++) {
@@ -57,8 +66,7 @@ void apply_filter() {
             case FILTER_ALL: break;
             case FILTER_PSP: if(stristr(all_games[i].platform, "PSP") == NULL) match = 0; break;
             case FILTER_PSX: if(stristr(all_games[i].platform, "PSX") == NULL) match = 0; break;
-            case FILTER_NUM: if(!isdigit((unsigned char)all_games[i].name[0])) match = 0; break;
-            case FILTER_JP: if(stristr(all_games[i].region, "JP") == NULL) match = 0; break;
+            case FILTER_CUSTOM: if(strcmp(all_games[i].platform, current_custom_platform) != 0) match = 0; break;
         }
         
         if(match && current_search[0] != '\0') {
@@ -93,7 +101,7 @@ void load_dir_list(const char* path) {
     if (!d) return;
 
     if (strcmp(path, "/") != 0) {
-        strcpy(dir_entries[dir_count++], "..");
+        snprintf(dir_entries[dir_count++], 256, "..");
     }
 
     struct dirent *dir;
@@ -120,9 +128,9 @@ void load_dir_list(const char* path) {
         for (int j = i + 1; j < dir_count; j++) {
             if (strcasecmp(dir_entries[i], dir_entries[j]) > 0) {
                 char temp[256];
-                strcpy(temp, dir_entries[i]);
-                strcpy(dir_entries[i], dir_entries[j]);
-                strcpy(dir_entries[j], temp);
+                snprintf(temp, sizeof(temp), "%s", dir_entries[i]);
+                snprintf(dir_entries[i], sizeof(dir_entries[i]), "%s", dir_entries[j]);
+                snprintf(dir_entries[j], sizeof(dir_entries[j]), "%s", temp);
             }
         }
     }
@@ -150,9 +158,6 @@ int main(int argc, char* argv[]) {
     int settings_idx = 0;
     int speed_idx = 1;
     
-    const char *main_menu[] = {"ALL GAMES", "PSP ONLY", "PSX ONLY", "# (NUMBERS)", "JAPAN (JP)", "SETTINGS", "ABOUT"};
-    int menu_size = 7; 
-
     const char *settings_menu[] = {"Set PSP Install Path", "Set PSX Install Path", "Download Cheats", "Back to Menu"};
     const char *speed_options[] = {"Slow/Stable", "Good/Recom.", "Fast/Unstable"};
 
@@ -199,26 +204,14 @@ int main(int argc, char* argv[]) {
             ui_draw_footer("Please wait...");
             consoleUpdate(NULL);
             
+            ia_load_consoles();
             total_games = 0;
+            
             struct MemoryStruct chunk_psp = {malloc(1), 0};
             struct MemoryStruct chunk_psx = {malloc(1), 0};
             
-            CURL *curl = curl_easy_init();
-            if(curl) {
-                curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-                curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-                curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-                
-                curl_easy_setopt(curl, CURLOPT_URL, URL_NPS_PSP);
-                curl_easy_setopt(curl, CURLOPT_WRITEDATA, &chunk_psp);
-                curl_easy_perform(curl);
-                
-                curl_easy_setopt(curl, CURLOPT_URL, URL_NPS_PSX);
-                curl_easy_setopt(curl, CURLOPT_WRITEDATA, &chunk_psx);
-                curl_easy_perform(curl);
-                
-                curl_easy_cleanup(curl);
-            }
+            fetch_to_memory(URL_NPS_PSP, &chunk_psp);
+            fetch_to_memory(URL_NPS_PSX, &chunk_psx);
             
             size_t total_size = chunk_psp.size + chunk_psx.size;
             if(total_size > 0 && total_size < DB_BUFFER_SIZE - 2) {
@@ -237,13 +230,53 @@ int main(int argc, char* argv[]) {
                     parse_db(db_buffer + offset, "PSX");
                 }
                 
+                nps_total_games = total_games;
                 state = STATE_MENU;
             } else {
                 printf("\n  DB Error. Check internet connection.\n");
                 while(1) { padUpdate(&pad); consoleUpdate(NULL); }
             }
+            
             free(chunk_psp.memory);
             free(chunk_psx.memory);
+        }
+        else if (state == STATE_LOADING_IA) {
+            consoleClear();
+            char head[128];
+            snprintf(head, sizeof(head), "%s > LOADING CONSOLE...", APP_NAME);
+            ui_draw_header(head);
+            printf("\n  Fetching metadata from Internet Archive...\n");
+            ui_draw_footer("Please wait...");
+            consoleUpdate(NULL);
+            
+            total_games = nps_total_games;
+            ia_clear_allocations();
+            
+            struct MemoryStruct chunk = {malloc(1), 0};
+            char url[256];
+            snprintf(url, sizeof(url), "https://archive.org/metadata/%s/files", custom_consoles[loading_custom_idx].ia_id);
+            
+            fetch_to_memory(url, &chunk);
+            
+            if(chunk.size > 0) {
+                ia_parse_metadata(chunk.memory, custom_consoles[loading_custom_idx].name, custom_consoles[loading_custom_idx].ia_id);
+                current_filter = FILTER_CUSTOM;
+                snprintf(current_custom_platform, sizeof(current_custom_platform), "%s", custom_consoles[loading_custom_idx].name);
+                current_search[0] = '\0';
+                apply_filter();
+                state = STATE_LIST;
+                list_idx = 0; list_top = 0;
+            } else {
+                printf("\n  Failed to fetch Internet Archive metadata.\n");
+                ui_draw_footer("[A] Continue");
+                consoleUpdate(NULL);
+                while(1) {
+                    padUpdate(&pad);
+                    if(padGetButtonsDown(&pad) & HidNpadButton_A) break;
+                }
+                state = STATE_MENU;
+            }
+            free(chunk.memory);
         }
         else if (state == STATE_MENU) {
             consoleClear();
@@ -252,13 +285,27 @@ int main(int argc, char* argv[]) {
             ui_draw_header(head);
             
             printf("\n");
+            int menu_size = 6 + custom_console_count; 
             for(int i = 0; i < menu_size; i++) {
                 if(i == menu_idx) printf("\x1b[47;30m");
-                printf(" %s \n", main_menu[i]);
+                
+                if (i == 0) printf(" ALL GAMES \n");
+                else if (i == 1) printf(" PSP ONLY \n");
+                else if (i == 2) printf(" PSX ONLY \n");
+                else if (i < 3 + custom_console_count) printf(" %s \n", custom_consoles[i - 3].name);
+                else if (i == 3 + custom_console_count) printf(" + ADD CONSOLE \n");
+                else if (i == 4 + custom_console_count) printf(" SETTINGS \n");
+                else if (i == 5 + custom_console_count) printf(" ABOUT \n");
+                
                 if(i == menu_idx) printf("\x1b[0m");
             }
             
-            ui_draw_footer("[A] Select  [Arrows] Navigate");
+            int is_hovering_custom = (menu_idx >= 3 && menu_idx < 3 + custom_console_count);
+            if (is_hovering_custom) {
+                ui_draw_footer("[A] Select  [X] Delete Console  [Arrows] Navigate");
+            } else {
+                ui_draw_footer("[A] Select  [Arrows] Navigate");
+            }
 
             if(move_down) {
                 if (menu_idx < menu_size - 1) menu_idx++;
@@ -266,34 +313,74 @@ int main(int argc, char* argv[]) {
             if(move_up) {
                 if (menu_idx > 0) menu_idx--;
             }
-            if(move_right) {
-                if(menu_idx + 3 < menu_size) menu_idx += 3;
-                else menu_idx = menu_size - 1;
-            }
-            if(move_left) {
-                if(menu_idx - 3 >= 0) menu_idx -= 3;
-                else menu_idx = 0;
+            
+            if (kDown & HidNpadButton_X && is_hovering_custom) {
+                delete_confirm_idx = menu_idx - 3;
+                state = STATE_CONFIRM_DELETE;
             }
             
             if(kDown & HidNpadButton_A) {
                 current_search[0] = '\0'; 
                 
-                if (menu_idx == 5) {
-                    state = STATE_SETTINGS;
-                    settings_idx = 0;
-                } else if (menu_idx == 6) {
-                    state = STATE_ABOUT;
-                } else {
-                    if(menu_idx == 0) current_filter = FILTER_ALL;
-                    else if(menu_idx == 1) current_filter = FILTER_PSP;
-                    else if(menu_idx == 2) current_filter = FILTER_PSX;
-                    else if(menu_idx == 3) current_filter = FILTER_NUM;
-                    else if(menu_idx == 4) current_filter = FILTER_JP;
+                if (menu_idx == 0) {
+                    total_games = nps_total_games;
+                    current_filter = FILTER_ALL; apply_filter();
+                    state = STATE_LIST; list_idx = 0; list_top = 0;
+                } else if (menu_idx == 1) {
+                    total_games = nps_total_games;
+                    current_filter = FILTER_PSP; apply_filter();
+                    state = STATE_LIST; list_idx = 0; list_top = 0;
+                } else if (menu_idx == 2) {
+                    total_games = nps_total_games;
+                    current_filter = FILTER_PSX; apply_filter();
+                    state = STATE_LIST; list_idx = 0; list_top = 0;
+                } else if (menu_idx < 3 + custom_console_count) {
+                    loading_custom_idx = menu_idx - 3;
+                    state = STATE_LOADING_IA;
+                } else if (menu_idx == 3 + custom_console_count) {
+                    SwkbdConfig kbd;
+                    char temp_name[64] = "";
+                    char temp_id[128] = "";
                     
-                    apply_filter();
-                    state = STATE_LIST;
-                    list_idx = 0; list_top = 0;
+                    if (R_SUCCEEDED(swkbdCreate(&kbd, 0))) {
+                        swkbdConfigMakePresetDefault(&kbd);
+                        swkbdConfigSetGuideText(&kbd, "Console Name (ex: SNES)");
+                        if (R_SUCCEEDED(swkbdShow(&kbd, temp_name, sizeof(temp_name)))) {
+                            swkbdConfigSetGuideText(&kbd, "Internet Archive Item ID (ex: retro-snes)");
+                            if (R_SUCCEEDED(swkbdShow(&kbd, temp_id, sizeof(temp_id)))) {
+                                snprintf(pending_console_name, sizeof(pending_console_name), "%s", temp_name);
+                                snprintf(pending_console_id, sizeof(pending_console_id), "%s", temp_id);
+                                setting_path_mode = 3; 
+                                snprintf(current_browse_path, sizeof(current_browse_path), "/");
+                                load_dir_list(current_browse_path);
+                                dir_idx = 0; dir_top = 0;
+                                state = STATE_BROWSE_DIR;
+                            }
+                        }
+                        swkbdClose(&kbd);
+                    }
+                } else if (menu_idx == 4 + custom_console_count) {
+                    state = STATE_SETTINGS; settings_idx = 0;
+                } else if (menu_idx == 5 + custom_console_count) {
+                    state = STATE_ABOUT;
                 }
+            }
+        }
+        else if (state == STATE_CONFIRM_DELETE) {
+            consoleClear();
+            ui_draw_header("Confirm Deletion");
+            printf("\n  Are you sure you want to remove the console:\n  '%s'?\n\n", custom_consoles[delete_confirm_idx].name);
+            printf("  [A] YES, remove it\n");
+            printf("  [B] NO, cancel\n");
+            ui_draw_footer("[A] Confirm   [B] Cancel");
+            consoleUpdate(NULL);
+            
+            if (kDown & HidNpadButton_A) {
+                ia_remove_console(delete_confirm_idx);
+                state = STATE_MENU;
+                menu_idx = 0; 
+            } else if (kDown & HidNpadButton_B) {
+                state = STATE_MENU;
             }
         }
         else if (state == STATE_ABOUT) {
@@ -345,7 +432,7 @@ int main(int argc, char* argv[]) {
             if(kDown & HidNpadButton_A) {
                 if(settings_idx == 0 || settings_idx == 1) {
                     setting_path_mode = (settings_idx == 0) ? 1 : 2;
-                    strcpy(current_browse_path, "/");
+                    snprintf(current_browse_path, sizeof(current_browse_path), "/");
                     load_dir_list(current_browse_path);
                     dir_idx = 0;
                     dir_top = 0;
@@ -422,19 +509,20 @@ int main(int argc, char* argv[]) {
             if(dir_top < 0) dir_top = 0;
 
             if (kDown & HidNpadButton_B) {
-                state = STATE_SETTINGS;
+                state = setting_path_mode == 3 ? STATE_MENU : STATE_SETTINGS;
             }
             
             if (kDown & HidNpadButton_X) {
                 if (setting_path_mode == 1) {
-                    strncpy(install_path_psp, current_browse_path, sizeof(install_path_psp) - 1);
-                    install_path_psp[sizeof(install_path_psp) - 1] = '\0';
-                } else {
-                    strncpy(install_path_psx, current_browse_path, sizeof(install_path_psx) - 1);
-                    install_path_psx[sizeof(install_path_psx) - 1] = '\0';
+                    snprintf(install_path_psp, sizeof(install_path_psp), "%s", current_browse_path);
+                    save_config();
+                } else if (setting_path_mode == 2) {
+                    snprintf(install_path_psx, sizeof(install_path_psx), "%s", current_browse_path);
+                    save_config();
+                } else if (setting_path_mode == 3) {
+                    ia_add_console(pending_console_name, pending_console_id, current_browse_path);
                 }
-                save_config();
-                state = STATE_SETTINGS;
+                state = setting_path_mode == 3 ? STATE_MENU : STATE_SETTINGS;
             }
 
             if (kDown & HidNpadButton_A && dir_count > 0) {
@@ -443,7 +531,7 @@ int main(int argc, char* argv[]) {
                     if (last_slash && last_slash != current_browse_path) {
                         *last_slash = '\0';
                     } else {
-                        strcpy(current_browse_path, "/");
+                        snprintf(current_browse_path, sizeof(current_browse_path), "/");
                     }
                 } else {
                     if (strcmp(current_browse_path, "/") != 0) {
@@ -475,7 +563,7 @@ int main(int argc, char* argv[]) {
                     
                     GameEntry *g = filtered_games[actual_idx];
                     char dname[54];
-                    strncpy(dname, g->name, 53); dname[53] = '\0';
+                    snprintf(dname, sizeof(dname), "%s", g->name);
                     printf(" [%s][%s] %-50s \n", g->platform, g->region, dname);
                     
                     if(actual_idx == list_idx) printf("\x1b[0m");
@@ -561,41 +649,63 @@ int main(int argc, char* argv[]) {
         else if (state == STATE_DOWNLOADING) {
             GameEntry *g = filtered_games[list_idx];
             char safe_name[256];
-            strncpy(safe_name, g->name, 255); safe_name[255] = '\0';
-            sanitize_filename(safe_name);
+            snprintf(safe_name, sizeof(safe_name), "%s", g->name);
             
+            int is_custom = (current_filter == FILTER_CUSTOM);
             int is_psx = (stristr(g->platform, "PSX") != NULL);
-            const char *target_dir = is_psx ? install_path_psx : install_path_psp;
+            
+            if (!is_custom) {
+                sanitize_filename(safe_name);
+            }
+            
+            const char *target_dir;
+            if (is_custom) {
+                target_dir = custom_consoles[loading_custom_idx].path;
+            } else {
+                target_dir = is_psx ? install_path_psx : install_path_psp;
+            }
+            
             mkdir_p(target_dir);
             
-            char pkg_path[1024];
-            snprintf(pkg_path, sizeof(pkg_path), "%s/%s_temp.pkg", target_dir, safe_name);
+            char file_path[1024];
+            if (is_custom) {
+                snprintf(file_path, sizeof(file_path), "%s/%s", target_dir, g->name);
+            } else {
+                snprintf(file_path, sizeof(file_path), "%s/%s_temp.pkg", target_dir, safe_name);
+            }
             
             char header_buf[128];
-            snprintf(header_buf, 128, "%s > DOWNLOADING PKG...", APP_NAME);
+            snprintf(header_buf, sizeof(header_buf), "%s > DOWNLOADING...", APP_NAME);
 
-            int result = download_file(g->url, pkg_path, &pad, header_buf, selected_threads);
+            int result = download_file(g->url, file_path, &pad, header_buf, selected_threads);
             
             consoleClear();
             ui_draw_header(header_buf);
 
             if(result == 1) {
-                state = STATE_CONVERTING;
-                
-                printf("\n\n  PROCESSING FILES...\n");
-                ui_draw_footer("Please wait...");
-                consoleUpdate(NULL); 
-
-                if (extract_game_from_pkg(pkg_path, target_dir, safe_name, is_psx)) {
-                    remove(pkg_path); 
-                    printf("  Saved to directory: %s\n", target_dir);
+                if (is_custom) {
+                    printf("\n\n  \x1b[1;32mDONE!\x1b[0m\n");
+                    printf("  Saved to: %s\n", file_path);
+                    printf("\n\n  Press A to return...");
+                    ui_draw_footer("[A] Continue");
                 } else {
-                    printf("\n\n  \x1b[1;31mPROCESSING ERROR.\x1b[0m\n");
-                    remove(pkg_path); 
+                    state = STATE_CONVERTING;
+                    
+                    printf("\n\n  PROCESSING FILES...\n");
+                    ui_draw_footer("Please wait...");
+                    consoleUpdate(NULL); 
+
+                    if (extract_game_from_pkg(file_path, target_dir, safe_name, is_psx)) {
+                        remove(file_path); 
+                        printf("  Saved to directory: %s\n", target_dir);
+                    } else {
+                        printf("\n\n  \x1b[1;31mPROCESSING ERROR.\x1b[0m\n");
+                        remove(file_path); 
+                    }
+                    
+                    printf("\n\n  Press A to return...");
+                    ui_draw_footer("[A] Continue");
                 }
-                
-                printf("\n\n  Press A to return...");
-                ui_draw_footer("[A] Continue");
             } else if (result == -1) {
                 printf("\n\n  \x1b[1;33mCANCELED.\x1b[0m\n");
                 printf("  Press A to return...");

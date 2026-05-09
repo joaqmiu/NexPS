@@ -19,7 +19,7 @@ struct MemoryStruct {
 };
 
 int download_file(const char *url, const char *path, PadState *pad, const char *header_title, int num_threads);
+int fetch_to_memory(const char *url, struct MemoryStruct *chunk);
 void parse_db(char *data, const char *platform);
-size_t WriteMemoryCallback(void *contents, size_t size, size_t nmemb, void *userp);
 
 #endif

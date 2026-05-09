@@ -26,7 +26,7 @@ typedef struct {
     int failed;
 } PartContext;
 
-size_t WriteMemoryCallback(void *contents, size_t size, size_t nmemb, void *userp) {
+static size_t WriteMemoryCallback(void *contents, size_t size, size_t nmemb, void *userp) {
     size_t realsize = size * nmemb;
     struct MemoryStruct *mem = (struct MemoryStruct *)userp;
     char *ptr = realloc(mem->memory, mem->size + realsize + 1);
@@ -98,6 +98,23 @@ static CURL *make_part_handle(const char *url, PartContext *ctx) {
     curl_easy_setopt(h, CURLOPT_PRIVATE, ctx);
 
     return h;
+}
+
+int fetch_to_memory(const char *url, struct MemoryStruct *chunk) {
+    CURL *curl = curl_easy_init();
+    if (!curl) return 0;
+    
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, chunk);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, APP_NAME "/" APP_VERSION);
+    
+    CURLcode res = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+    
+    return (res == CURLE_OK);
 }
 
 int download_file(const char *url, const char *path, PadState *pad, const char *header_title, int num_threads) {
