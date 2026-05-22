@@ -1,4 +1,5 @@
 #include <borealis.hpp>
+#include <borealis/views/dialog.hpp>
 #include <cstdlib>
 #include <cstring>
 
@@ -27,7 +28,7 @@ static brls::View* buildHelloView() {
     subtitle->setMarginTop(12.0f);
 
     auto* hint = new brls::Label();
-    hint->setText("Press + to exit.");
+    hint->setText("Press + for exit dialog.");
     hint->setFontSize(16.0f);
     hint->setTextColor(nvgRGB(0x80, 0x80, 0x88));
     hint->setMarginTop(40.0f);
@@ -52,10 +53,21 @@ int main(int argc, char* argv[]) {
 
     brls::Application::createWindow(APP_NAME " v" APP_VERSION);
     brls::Application::getPlatform()->setThemeVariant(brls::ThemeVariant::DARK);
-    brls::Application::setGlobalQuit(true);
+    brls::Application::setGlobalQuit(false);
 
     auto* activity = new brls::Activity(buildHelloView());
     brls::Application::pushActivity(activity);
+
+    activity->registerAction(
+        "Exit",
+        brls::ControllerButton::BUTTON_START,
+        [](brls::View*) -> bool {
+            auto* dialog = new brls::Dialog("Exit NexPS?");
+            dialog->addButton("Yes", []() { brls::Application::quit(); });
+            dialog->addButton("Cancel", []() {});
+            dialog->open();
+            return true;
+        });
 
     while (brls::Application::mainLoop()) { }
 
