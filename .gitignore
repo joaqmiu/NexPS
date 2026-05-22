@@ -1,5 +1,9 @@
 # Build artifacts
 build/
+cmake-build*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
 *.elf
 *.nacp
 *.nso
