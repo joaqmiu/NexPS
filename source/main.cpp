@@ -169,22 +169,35 @@ private:
 
 class GamesDataSource : public brls::RecyclerDataSource {
 public:
-    explicit GamesDataSource(std::vector<GameEntry*> filtered)
-        : games(std::move(filtered)) {}
+    explicit GamesDataSource(const char* platformFilter) {
+        all.reserve(total_games / 2);
+        for (int i = 0; i < total_games; i++) {
+            if (stristr(all_games[i].platform, platformFilter) != nullptr) {
+                all.push_back(&all_games[i]);
+            }
+        }
+        applyFilter();
+    }
+
+    int  totalForPlatform() const { return (int)all.size(); }
+    void setSearchQuery(const std::string& q) {
+        query = q;
+        applyFilter();
+    }
 
     int numberOfRows(brls::RecyclerFrame*, int) override {
-        return (int)games.size();
+        return (int)visible.size();
     }
 
     brls::RecyclerCell* cellForRow(brls::RecyclerFrame* recycler,
                                    brls::IndexPath idx) override {
         auto* cell = (GameCell*)recycler->dequeueReusableCell("game");
-        cell->setGame(games[idx.row]);
+        cell->setGame(visible[idx.row]);
         return cell;
     }
 
     void didSelectRowAt(brls::RecyclerFrame*, brls::IndexPath idx) override {
-        const GameEntry* g = games[idx.row];
+        const GameEntry* g = visible[idx.row];
         char body[1024];
         snprintf(body, sizeof(body),
                  "%s\n\nPlatform: %s\nRegion: %s\nID: %s\n\n"
@@ -196,19 +209,30 @@ public:
     }
 
 private:
-    std::vector<GameEntry*> games;
-};
-
-static brls::View* buildGameListTab(const char* platformFilter) {
-    std::vector<GameEntry*> filtered;
-    filtered.reserve(total_games / 2);
-    for (int i = 0; i < total_games; i++) {
-        if (stristr(all_games[i].platform, platformFilter) != nullptr) {
-            filtered.push_back(&all_games[i]);
+    void applyFilter() {
+        visible.clear();
+        if (query.empty()) {
+            visible = all;
+            return;
+        }
+        visible.reserve(all.size());
+        for (auto* g : all) {
+            if (stristr(g->name, query.c_str()) != nullptr) {
+                visible.push_back(g);
+            }
         }
     }
 
-    if (filtered.empty()) {
+    std::vector<GameEntry*> all;
+    std::vector<GameEntry*> visible;
+    std::string             query;
+};
+
+static brls::View* buildGameListTab(const char* platformFilter) {
+    auto* ds = new GamesDataSource(platformFilter);
+
+    if (ds->totalForPlatform() == 0) {
+        delete ds;
         auto* box = new brls::Box(brls::Axis::COLUMN);
         box->setJustifyContent(brls::JustifyContent::CENTER);
         box->setAlignItems(brls::AlignItems::CENTER);
@@ -233,7 +257,20 @@ static brls::View* buildGameListTab(const char* platformFilter) {
     auto* recycler = new brls::RecyclerFrame();
     recycler->registerCell("game", []() { return new GameCell(); });
     recycler->estimatedRowHeight = 56.0f;
-    recycler->setDataSource(new GamesDataSource(std::move(filtered)));
+    recycler->setDataSource(ds);
+
+    recycler->registerAction(
+        "Search", brls::ControllerButton::BUTTON_Y,
+        [recycler, ds](brls::View*) -> bool {
+            brls::Application::getImeManager()->openForText(
+                [recycler, ds](std::string text) {
+                    ds->setSearchQuery(text);
+                    recycler->reloadData();
+                },
+                "Search games", "", 64, "");
+            return true;
+        });
+
     return recycler;
 }
 
