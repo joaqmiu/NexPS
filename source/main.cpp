@@ -1,7 +1,11 @@
 #include <borealis.hpp>
 #include <borealis/views/applet_frame.hpp>
+#include <borealis/views/cells/cell_detail.hpp>
+#include <borealis/views/cells/cell_input.hpp>
+#include <borealis/views/cells/cell_selector.hpp>
 #include <borealis/views/dialog.hpp>
 #include <borealis/views/recycler.hpp>
+#include <borealis/views/scrolling_frame.hpp>
 #include <borealis/views/tab_frame.hpp>
 
 #include <vector>
@@ -274,6 +278,68 @@ static brls::View* buildGameListTab(const char* platformFilter) {
     return recycler;
 }
 
+// ---------- Settings ----------
+
+static brls::View* buildSettingsTab() {
+    auto* scroll    = new brls::ScrollingFrame();
+    auto* container = new brls::Box(brls::Axis::COLUMN);
+    container->setPadding(24.0f);
+
+    auto* pspCell = new brls::InputCell();
+    pspCell->init(
+        "PSP install path", install_path_psp,
+        [](std::string value) {
+            strncpy(install_path_psp, value.c_str(), sizeof(install_path_psp) - 1);
+            install_path_psp[sizeof(install_path_psp) - 1] = '\0';
+            save_config();
+        },
+        DEFAULT_INSTALL_PATH_PSP, "Where extracted PSP games are written", 256, 0);
+
+    auto* psxCell = new brls::InputCell();
+    psxCell->init(
+        "PSX install path", install_path_psx,
+        [](std::string value) {
+            strncpy(install_path_psx, value.c_str(), sizeof(install_path_psx) - 1);
+            install_path_psx[sizeof(install_path_psx) - 1] = '\0';
+            save_config();
+        },
+        DEFAULT_INSTALL_PATH_PSX, "Where extracted PSX BIN/CUE pairs land", 256, 0);
+
+    auto* speedCell = new brls::SelectorCell();
+    int speedIdx = (selected_threads == 1) ? 0 : (selected_threads == 8 ? 2 : 1);
+    speedCell->init(
+        "Download speed",
+        { "Slow / Stable (1 thread)",
+          "Good / Recommended (4 threads)",
+          "Fast / Unstable (8 threads)" },
+        speedIdx,
+        [](int idx) {
+            selected_threads = (idx == 0) ? 1 : (idx == 2 ? 8 : 4);
+            save_config();
+        });
+
+    auto* cheatsCell = new brls::DetailCell();
+    cheatsCell->setText("Download Cheats DB");
+    cheatsCell->setDetailText("CWCheat Plus (~5 MB) — Phase 6");
+    cheatsCell->setFocusable(true);
+    cheatsCell->registerClickAction([](brls::View*) -> bool {
+        auto* dialog = new brls::Dialog(
+            "The Cheats DB download will return in Phase 6, sharing the\n"
+            "same threaded downloader that the PSP / PSX titles will use.");
+        dialog->addButton("OK", []() {});
+        dialog->open();
+        return true;
+    });
+
+    container->addView(pspCell);
+    container->addView(psxCell);
+    container->addView(speedCell);
+    container->addView(cheatsCell);
+
+    scroll->setContentView(container);
+    return scroll;
+}
+
 static brls::View* buildPlaceholderTab(const std::string& heading,
                                        const std::string& subtitle) {
     auto* box = new brls::Box(brls::Axis::COLUMN);
@@ -356,10 +422,7 @@ static brls::Activity* makeMainActivity() {
             "Internet Archive console flow returns in Phase 5.");
     });
     tabFrame->addSeparator();
-    tabFrame->addTab("Settings", []() {
-        return buildPlaceholderTab("Settings",
-            "Paths, download speed, cheats DB — Phase 3.");
-    });
+    tabFrame->addTab("Settings", []() { return buildSettingsTab(); });
     tabFrame->addTab("About", []() { return buildAboutTab(); });
 
     auto* appletFrame = new brls::AppletFrame(tabFrame);
