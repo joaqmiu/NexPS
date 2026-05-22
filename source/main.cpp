@@ -3,6 +3,7 @@
 #include <borealis/views/dialog.hpp>
 #include <borealis/views/tab_frame.hpp>
 
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -18,7 +19,104 @@ static const NVGcolor ACCENT_DARK    = nvgRGB(0x88, 0x30, 0xCC);
 static const NVGcolor ACCENT_LIGHT   = nvgRGB(0xD0, 0x80, 0xFF);
 static const NVGcolor ACCENT_PULSE   = nvgRGBA(0xB8, 0x47, 0xFF, 38);
 
+// ---------- Async DB load (libnx Thread API, not std::thread) ----------
+
+enum class DbState { Loading, Ready, Error };
+
+static std::atomic<DbState> g_dbState{DbState::Loading};
+static std::atomic<int>     g_dbStep{0}; // 0=init, 1=PSP fetch, 2=PSX fetch, 3=parsing
+static Thread               g_dbThread;
+static bool                 g_dbThreadStarted = false;
+
+// libnx Thread entry — must be plain C function pointer signature.
+static void dbLoaderEntry(void*) {
+    ia_load_consoles();
+    total_games = 0;
+
+    MemoryStruct chunkPSP = { (char*)malloc(1), 0 };
+    MemoryStruct chunkPSX = { (char*)malloc(1), 0 };
+
+    g_dbStep.store(1);
+    fetch_to_memory(URL_NPS_PSP, &chunkPSP);
+
+    g_dbStep.store(2);
+    fetch_to_memory(URL_NPS_PSX, &chunkPSX);
+
+    g_dbStep.store(3);
+    size_t total_size = chunkPSP.size + chunkPSX.size;
+    if (total_size > 0 && total_size < DB_BUFFER_SIZE - 2) {
+        size_t offset = 0;
+        if (chunkPSP.size > 0) {
+            memcpy(db_buffer, chunkPSP.memory, chunkPSP.size);
+            db_buffer[chunkPSP.size] = '\0';
+            parse_db(db_buffer, "PSP");
+            offset += chunkPSP.size + 1;
+        }
+        if (chunkPSX.size > 0) {
+            memcpy(db_buffer + offset, chunkPSX.memory, chunkPSX.size);
+            db_buffer[offset + chunkPSX.size] = '\0';
+            parse_db(db_buffer + offset, "PSX");
+        }
+        g_dbState.store(DbState::Ready);
+    } else {
+        g_dbState.store(DbState::Error);
+    }
+
+    free(chunkPSP.memory);
+    free(chunkPSX.memory);
+}
+
+static void startDbLoad() {
+    constexpr size_t STACK_SZ = 0x20000; // 128 KB — curl + parsing room
+    Result r = threadCreate(&g_dbThread, dbLoaderEntry, nullptr,
+                            nullptr, STACK_SZ, 0x2C, -2);
+    if (R_FAILED(r)) {
+        brls::Logger::error("threadCreate failed: 0x{:x}", r);
+        g_dbState.store(DbState::Error);
+        return;
+    }
+    r = threadStart(&g_dbThread);
+    if (R_FAILED(r)) {
+        brls::Logger::error("threadStart failed: 0x{:x}", r);
+        threadClose(&g_dbThread);
+        g_dbState.store(DbState::Error);
+        return;
+    }
+    g_dbThreadStarted = true;
+}
+
+static void joinDbThread() {
+    if (!g_dbThreadStarted) return;
+    threadWaitForExit(&g_dbThread);
+    threadClose(&g_dbThread);
+    g_dbThreadStarted = false;
+}
+
 // ---------- Views ----------
+
+static brls::View* buildSplashView(brls::Label** outStatus) {
+    auto* root = new brls::Box(brls::Axis::COLUMN);
+    root->setJustifyContent(brls::JustifyContent::CENTER);
+    root->setAlignItems(brls::AlignItems::CENTER);
+    root->setGrow(1.0f);
+
+    auto* title = new brls::Label();
+    title->setText(APP_NAME " v" NEXPS_VERSION);
+    title->setFontSize(56.0f);
+    title->setTextColor(ACCENT_MAIN);
+
+    auto* status = new brls::Label();
+    status->setText("Initializing...");
+    status->setFontSize(22.0f);
+    status->setTextColor(nvgRGB(0xE0, 0xE0, 0xE0));
+    status->setMarginTop(28.0f);
+
+    root->addView(title);
+    root->addView(status);
+
+    *outStatus = status;
+    return root;
+}
 
 static brls::View* buildPlaceholderTab(const std::string& heading,
                                        const std::string& subtitle) {
@@ -162,20 +260,49 @@ int main(int argc, char* argv[]) {
 
     applyAccentTheme();
 
-    // Phase 1: UI skeleton without DB load. The NoPayStation fetch will
-    // come back in Phase 1.1 wrapped in a libnx Thread (not std::thread —
-    // devkitA64's libstdc++ threading was causing a silent crash inside
-    // Eden / similar emulators). For now, custom consoles are read from
-    // SD and the game count starts at zero; tabs show placeholder copy.
-    total_games = 0;
-    ia_load_consoles();
+    // Phase 1.1: splash + libnx-Thread DB load + runloop-driven swap.
+    // ia_load_consoles is called inside the worker (file I/O + fetch).
+    brls::Label* statusLabel = nullptr;
+    auto* splashActivity = new brls::Activity(buildSplashView(&statusLabel));
+    brls::Application::pushActivity(splashActivity);
+    registerExitDialog(splashActivity);
 
-    auto* mainActivity = makeMainActivity();
-    registerExitDialog(mainActivity);
-    brls::Application::pushActivity(mainActivity);
+    startDbLoad();
+
+    static bool swapped = false;
+    brls::Application::getRunLoopEvent()->subscribe([statusLabel]() {
+        if (swapped) return;
+
+        DbState state = g_dbState.load();
+        int     step  = g_dbStep.load();
+
+        if (state == DbState::Ready) {
+            auto* mainActivity = makeMainActivity();
+            registerExitDialog(mainActivity);
+            brls::Application::popActivity(brls::TransitionAnimation::FADE);
+            brls::Application::pushActivity(mainActivity);
+            swapped = true;
+            return;
+        }
+        if (state == DbState::Error) {
+            statusLabel->setText("Database fetch failed. Press + and reopen.");
+            swapped = true;
+            return;
+        }
+        switch (step) {
+            case 1: statusLabel->setText("Downloading PSP database..."); break;
+            case 2: statusLabel->setText("Downloading PSX database..."); break;
+            case 3: statusLabel->setText("Parsing games..."); break;
+            default: statusLabel->setText("Initializing..."); break;
+        }
+    });
 
     while (brls::Application::mainLoop()) { }
 
+    // Intentionally not calling joinDbThread() — if the loader is still in
+    // a blocking curl call (e.g. an unfinished SSL handshake against a
+    // stubbed emulator service), threadWaitForExit would hang the exit.
+    // The kernel reaps the thread on process termination.
     free(db_buffer);
     return EXIT_SUCCESS;
 }
