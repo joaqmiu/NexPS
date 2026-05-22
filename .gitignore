@@ -1,0 +1,17 @@
+# Build artifacts
+build/
+*.elf
+*.nacp
+*.nso
+*.pfs0
+*.map
+
+# IDE / tooling
+.claude/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Local user config
+*.local
