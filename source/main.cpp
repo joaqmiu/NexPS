@@ -52,9 +52,10 @@ int main(int argc, char* argv[]) {
 
     brls::Application::createWindow(APP_NAME " v" APP_VERSION);
     brls::Application::getPlatform()->setThemeVariant(brls::ThemeVariant::DARK);
-    brls::Application::setGlobalQuit(false);
+    brls::Application::setGlobalQuit(true);
 
-    brls::Application::pushActivity(new brls::Activity(buildHelloView()));
+    auto* activity = new brls::Activity(buildHelloView());
+    brls::Application::pushActivity(activity);
 
     while (brls::Application::mainLoop()) { }
 
