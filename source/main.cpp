@@ -1,7 +1,10 @@
 #include <borealis.hpp>
 #include <borealis/views/applet_frame.hpp>
 #include <borealis/views/dialog.hpp>
+#include <borealis/views/recycler.hpp>
 #include <borealis/views/tab_frame.hpp>
+
+#include <vector>
 
 #include <atomic>
 #include <cstdlib>
@@ -118,6 +121,122 @@ static brls::View* buildSplashView(brls::Label** outStatus) {
     return root;
 }
 
+// ---------- Game list ----------
+
+class GameCell : public brls::RecyclerCell {
+public:
+    GameCell() {
+        this->setAxis(brls::Axis::ROW);
+        this->setPaddingTop(14.0f);
+        this->setPaddingBottom(14.0f);
+        this->setPaddingLeft(24.0f);
+        this->setPaddingRight(24.0f);
+        this->setFocusable(true);
+        this->setHeight(56.0f);
+
+        platformBadge = new brls::Label();
+        platformBadge->setFontSize(15.0f);
+        platformBadge->setTextColor(ACCENT_MAIN);
+        platformBadge->setWidth(48.0f);
+
+        title = new brls::Label();
+        title->setFontSize(20.0f);
+        title->setGrow(1.0f);
+        title->setMarginLeft(12.0f);
+        title->setMarginRight(12.0f);
+
+        region = new brls::Label();
+        region->setFontSize(15.0f);
+        region->setTextColor(nvgRGB(0x90, 0x90, 0x98));
+        region->setWidth(80.0f);
+
+        this->addView(platformBadge);
+        this->addView(title);
+        this->addView(region);
+    }
+
+    void setGame(const GameEntry* g) {
+        platformBadge->setText(g ? g->platform : "");
+        title->setText(g ? g->name : "");
+        region->setText(g ? g->region : "");
+    }
+
+private:
+    brls::Label* platformBadge = nullptr;
+    brls::Label* title         = nullptr;
+    brls::Label* region        = nullptr;
+};
+
+class GamesDataSource : public brls::RecyclerDataSource {
+public:
+    explicit GamesDataSource(std::vector<GameEntry*> filtered)
+        : games(std::move(filtered)) {}
+
+    int numberOfRows(brls::RecyclerFrame*, int) override {
+        return (int)games.size();
+    }
+
+    brls::RecyclerCell* cellForRow(brls::RecyclerFrame* recycler,
+                                   brls::IndexPath idx) override {
+        auto* cell = (GameCell*)recycler->dequeueReusableCell("game");
+        cell->setGame(games[idx.row]);
+        return cell;
+    }
+
+    void didSelectRowAt(brls::RecyclerFrame*, brls::IndexPath idx) override {
+        const GameEntry* g = games[idx.row];
+        char body[1024];
+        snprintf(body, sizeof(body),
+                 "%s\n\nPlatform: %s\nRegion: %s\nID: %s\n\n"
+                 "Download flow returns in Phase 6.",
+                 g->name, g->platform, g->region, g->id);
+        auto* dialog = new brls::Dialog(std::string(body));
+        dialog->addButton("OK", []() {});
+        dialog->open();
+    }
+
+private:
+    std::vector<GameEntry*> games;
+};
+
+static brls::View* buildGameListTab(const char* platformFilter) {
+    std::vector<GameEntry*> filtered;
+    filtered.reserve(total_games / 2);
+    for (int i = 0; i < total_games; i++) {
+        if (stristr(all_games[i].platform, platformFilter) != nullptr) {
+            filtered.push_back(&all_games[i]);
+        }
+    }
+
+    if (filtered.empty()) {
+        auto* box = new brls::Box(brls::Axis::COLUMN);
+        box->setJustifyContent(brls::JustifyContent::CENTER);
+        box->setAlignItems(brls::AlignItems::CENTER);
+        box->setGrow(1.0f);
+
+        auto* msg = new brls::Label();
+        msg->setText("No games loaded.");
+        msg->setFontSize(28.0f);
+        msg->setTextColor(ACCENT_MAIN);
+
+        auto* hint = new brls::Label();
+        hint->setText("Database fetch did not complete. Re-open with internet.");
+        hint->setFontSize(18.0f);
+        hint->setTextColor(nvgRGB(0xB0, 0xB0, 0xB8));
+        hint->setMarginTop(16.0f);
+
+        box->addView(msg);
+        box->addView(hint);
+        return box;
+    }
+
+    auto* recycler = new brls::RecyclerFrame();
+    recycler->registerCell("game", []() { return new GameCell(); });
+    recycler->estimatedRowHeight = 56.0f;
+    recycler->setDataSource(new GamesDataSource(std::move(filtered)));
+    return recycler;
+}
+
 static brls::View* buildPlaceholderTab(const std::string& heading,
                                        const std::string& subtitle) {
     auto* box = new brls::Box(brls::Axis::COLUMN);
@@ -192,16 +311,8 @@ static void registerExitDialog(brls::Activity* activity) {
 static brls::Activity* makeMainActivity() {
     auto* tabFrame = new brls::TabFrame();
 
-    char dbInfo[64];
-    snprintf(dbInfo, sizeof(dbInfo), "%d games indexed", total_games);
-    std::string dbInfoStr(dbInfo);
-
-    tabFrame->addTab("PSP", [dbInfoStr]() {
-        return buildPlaceholderTab("PSP", "List view coming in Phase 2. " + dbInfoStr + ".");
-    });
-    tabFrame->addTab("PSX", [dbInfoStr]() {
-        return buildPlaceholderTab("PSX", "List view coming in Phase 2. " + dbInfoStr + ".");
-    });
+    tabFrame->addTab("PSP", []() { return buildGameListTab("PSP"); });
+    tabFrame->addTab("PSX", []() { return buildGameListTab("PSX"); });
     tabFrame->addSeparator();
     tabFrame->addTab("+ Add Console", []() {
         return buildPlaceholderTab("Add Console",
