@@ -40,27 +40,6 @@ static void calculate_iv(unsigned char *out, const unsigned char *base_iv, uint6
     }
 }
 
-static void draw_conversion_progress(size_t current, size_t total, const char* label) {
-    static int last_percent_conv = -1;
-    double fraction = (double)current / (double)total;
-    int percent = (int)(fraction * 100);
-
-    if (percent != last_percent_conv) {
-        last_percent_conv = percent;
-        int bar_width = 30;
-        int pos = bar_width * fraction;
-
-        printf("\r\x1b[K  %s [", label);
-        for (int i = 0; i < bar_width; ++i) {
-            if (i < pos) printf("=");
-            else if (i == pos) printf(">");
-            else printf(" ");
-        }
-        printf("] %3d%%", percent);
-        consoleUpdate(NULL);
-    }
-}
-
 static void generate_cue_file(const char *cue_path, const char *bin_filename) {
     FILE *f = fopen(cue_path, "w");
     if (f) {
@@ -71,7 +50,8 @@ static void generate_cue_file(const char *cue_path, const char *bin_filename) {
     }
 }
 
-static int extract_psar_to_bin(const char *pbp_path, const char *bin_path) {
+static int extract_psar_to_bin(const char *pbp_path, const char *bin_path,
+                                conv_progress_cb cb, void *user) {
     FILE *fpbp = fopen(pbp_path, "rb");
     if (!fpbp) return 0;
 
@@ -81,13 +61,13 @@ static int extract_psar_to_bin(const char *pbp_path, const char *bin_path) {
         return 0;
     }
 
-    if (header[0] != 0x50425000) { 
+    if (header[0] != 0x50425000) {
         fclose(fpbp);
         return 0;
     }
 
-    uint32_t psar_offset = header[9]; 
-    
+    uint32_t psar_offset = header[9];
+
     fseek(fpbp, 0, SEEK_END);
     uint32_t file_size = ftell(fpbp);
     if (psar_offset == 0 || psar_offset >= file_size) {
@@ -96,7 +76,7 @@ static int extract_psar_to_bin(const char *pbp_path, const char *bin_path) {
     }
 
     uint32_t psar_size = file_size - psar_offset;
-    
+
     FILE *fbin = fopen(bin_path, "wb");
     if (!fbin) {
         fclose(fpbp);
@@ -107,14 +87,16 @@ static int extract_psar_to_bin(const char *pbp_path, const char *bin_path) {
     unsigned char *buffer = malloc(CHUNK_SIZE);
     uint32_t remaining = psar_size;
 
-    printf("\n");
+    if (cb) cb(CONV_PHASE_PSAR, 0, (long long)psar_size, user);
     while (remaining > 0) {
         size_t to_read = (remaining < CHUNK_SIZE) ? remaining : CHUNK_SIZE;
         size_t r = fread(buffer, 1, to_read, fpbp);
         if (r == 0) break;
         fwrite(buffer, 1, r, fbin);
         remaining -= r;
-        draw_conversion_progress(psar_size - remaining, psar_size, "BIN Extraction");
+        if (cb) cb(CONV_PHASE_PSAR,
+                   (long long)(psar_size - remaining),
+                   (long long)psar_size, user);
     }
 
     free(buffer);
@@ -123,7 +105,9 @@ static int extract_psar_to_bin(const char *pbp_path, const char *bin_path) {
     return 1;
 }
 
-int extract_game_from_pkg(const char *input_pkg, const char *output_dir, const char *safe_name, int is_psx) {
+int extract_game_from_pkg(const char *input_pkg, const char *output_dir,
+                          const char *safe_name, int is_psx,
+                          conv_progress_cb cb, void *user) {
     FILE *fd = fopen(input_pkg, "rb");
     if (!fd) return 0;
 
@@ -131,10 +115,9 @@ int extract_game_from_pkg(const char *input_pkg, const char *output_dir, const c
     if (fread(header, 1, 192, fd) != 192) { fclose(fd); return 0; }
 
     uint32_t magic = swap32(*(uint32_t*)(header + 0));
-    if (magic != 0x7F504B47) { 
-        printf("\nError: Invalid Magic number.\n");
-        fclose(fd); 
-        return 0; 
+    if (magic != 0x7F504B47) {
+        fclose(fd);
+        return 0;
     }
 
     uint32_t meta_offset = swap32(*(uint32_t*)(header + 8));
@@ -202,8 +185,6 @@ int extract_game_from_pkg(const char *input_pkg, const char *output_dir, const c
         name_dec[name_size] = '\0';
 
         if (stristr((char*)name_dec, "EBOOT.PBP")) {
-            printf("\n  Decrypting: %s\n", is_psx ? "PSX Base (PBP)" : "PSP Game (PBP)");
-            
             FILE *fout = fopen(pbp_temp_path, "wb");
             if (fout) {
                 unsigned char *chunk_buf = malloc(CHUNK_SIZE);
@@ -211,6 +192,7 @@ int extract_game_from_pkg(const char *input_pkg, const char *output_dir, const c
                 uint64_t remaining = data_size;
                 uint64_t current_file_pos = data_offset;
 
+                if (cb) cb(CONV_PHASE_DECRYPT, 0, (long long)data_size, user);
                 while (remaining > 0) {
                     size_t len = (remaining < CHUNK_SIZE) ? remaining : CHUNK_SIZE;
                     fseek(fd, enc_offset + current_file_pos, SEEK_SET);
@@ -225,7 +207,9 @@ int extract_game_from_pkg(const char *input_pkg, const char *output_dir, const c
                     fwrite(chunk_dec, 1, len, fout);
                     remaining -= len;
                     current_file_pos += len;
-                    draw_conversion_progress(data_size - remaining, data_size, "Decryption");
+                    if (cb) cb(CONV_PHASE_DECRYPT,
+                               (long long)(data_size - remaining),
+                               (long long)data_size, user);
                 }
                 free(chunk_buf);
                 free(chunk_dec);
@@ -264,23 +248,20 @@ int extract_game_from_pkg(const char *input_pkg, const char *output_dir, const c
     fclose(fd);
 
     if (!pbp_extracted) {
-        printf("\nEBOOT.PBP not found in PKG.\n");
         return 0;
     }
 
     if (is_psx) {
         char bin_path[1024], cue_path[1024];
         char bin_filename[256];
-        
+
         snprintf(bin_filename, sizeof(bin_filename), "%s.BIN", safe_name);
         snprintf(bin_path, sizeof(bin_path), "%s/%s", output_dir, bin_filename);
         snprintf(cue_path, sizeof(cue_path), "%s/%s.CUE", output_dir, safe_name);
 
-        printf("\n  Unpacking PSAR to BIN/CUE...\n");
-        if (extract_psar_to_bin(pbp_temp_path, bin_path)) {
+        if (extract_psar_to_bin(pbp_temp_path, bin_path, cb, user)) {
             generate_cue_file(cue_path, bin_filename);
             remove(pbp_temp_path);
-            printf("\n\n  \x1b[1;32mPSX CUE/BIN created.\x1b[0m\n");
             return 1;
         } else {
             return 0;
@@ -289,12 +270,12 @@ int extract_game_from_pkg(const char *input_pkg, const char *output_dir, const c
         char final_pbp_path[1024];
         snprintf(final_pbp_path, sizeof(final_pbp_path), "%s/%s.PBP", output_dir, safe_name);
         rename(pbp_temp_path, final_pbp_path);
-        printf("\n\n  \x1b[1;32mPSP PBP extracted.\x1b[0m\n");
         return 1;
     }
 }
 
-int extract_archive(const char *filename, const char *dest_dir) {
+int extract_archive(const char *filename, const char *dest_dir,
+                    conv_progress_cb on_progress, void *user) {
     struct archive *a;
     struct archive *ext;
     struct archive_entry *entry;
@@ -310,9 +291,9 @@ int extract_archive(const char *filename, const char *dest_dir) {
     archive_read_support_filter_all(a);
     ext = archive_write_disk_new();
     archive_write_disk_set_options(ext, flags);
-    
-    // LINHA REMOVIDA AQUI: archive_write_disk_set_standard_lookup(ext);
-    // Removemos isso para evitar erros de getpwnam e getgrnam no Switch.
+
+    // archive_write_disk_set_standard_lookup removed: getpwnam / getgrnam
+    // are not implemented on the Switch.
 
     if ((r = archive_read_open_filename(a, filename, 10240))) {
         chdir(current_dir);
@@ -321,6 +302,7 @@ int extract_archive(const char *filename, const char *dest_dir) {
         return 0;
     }
 
+    int64_t bytes_written = 0;
     int success = 1;
     while (archive_read_next_header(a, &entry) == ARCHIVE_OK) {
         r = archive_write_header(ext, entry);
@@ -333,16 +315,20 @@ int extract_archive(const char *filename, const char *dest_dir) {
                     success = 0;
                     break;
                 }
+                bytes_written += (int64_t)size;
+                if (on_progress) on_progress(CONV_PHASE_ARCHIVE,
+                                             (long long)bytes_written,
+                                             -1LL, user);
             }
             archive_write_finish_entry(ext);
         }
     }
-    
+
     archive_read_close(a);
     archive_read_free(a);
     archive_write_close(ext);
     archive_write_free(ext);
     chdir(current_dir);
-    
+
     return success;
 }

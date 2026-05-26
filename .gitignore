@@ -1,0 +1,21 @@
+# Build artifacts
+build/
+cmake-build*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+*.elf
+*.nacp
+*.nso
+*.pfs0
+*.map
+
+# IDE / tooling
+.claude/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Local user config
+*.local
